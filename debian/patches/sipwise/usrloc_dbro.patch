@@ -1,6 +1,21 @@
+From 5c997581afbeb8defe46f5ed6910e68dd0361937 Mon Sep 17 00:00:00 2001
+From: Victor Seva <linuxmaniac@torreviejawireless.org>
+Date: Mon, 5 Jan 2015 17:27:09 +0100
+Subject: [PATCH] MT#9205: usrloc: add db_url_ro parameter
+
+Add ro connection per child
+
+(cherry picked from commit 9cf496f82957449108a64cf844264537df6da1f2)
+---
+ modules/usrloc/ul_mod.c | 65 +++++++++++++++++++++++++++++++++++++++++++++++++
+ modules/usrloc/ul_mod.h |  2 ++
+ 2 files changed, 67 insertions(+)
+
+diff --git a/modules/usrloc/ul_mod.c b/modules/usrloc/ul_mod.c
+index 5992258..2dae5ee 100644
 --- a/modules/usrloc/ul_mod.c
 +++ b/modules/usrloc/ul_mod.c
-@@ -157,6 +157,7 @@
+@@ -159,6 +159,7 @@ str ulattrs_avalue_col = str_init(ULATTRS_AVALUE_COL); /*!< Name of column conta
  str ulattrs_last_mod_col = str_init(ULATTRS_LAST_MOD_COL);	/*!< Name of column containing the last modified date */
  
  str db_url          = str_init(DEFAULT_DB_URL);	/*!< Database URL */
@@ -8,7 +23,7 @@
  int timer_interval  = 60;				/*!< Timer interval in seconds */
  int db_mode         = 0;				/*!< Database sync scheme: 0-no db, 1-write through, 2-write back, 3-only db */
  int use_domain      = 0;				/*!< Whether usrloc should use domain part of aor */
-@@ -173,6 +174,8 @@
+@@ -176,6 +177,8 @@ unsigned int init_flag = 0;
  db1_con_t* ul_dbh = 0; /* Database connection handle */
  db_func_t ul_dbf;
  
@@ -17,15 +32,15 @@
  
  
  /*! \brief
-@@ -199,6 +202,7 @@
- 	{"flags_column",        STR_PARAM, &flags_col.s     },
- 	{"cflags_column",       STR_PARAM, &cflags_col.s    },
- 	{"db_url",              STR_PARAM, &db_url.s        },
-+	{"db_url_ro",           STR_PARAM, &db_url_ro.s     },
+@@ -202,6 +205,7 @@ static param_export_t params[] = {
+ 	{"flags_column",        PARAM_STR, &flags_col     },
+ 	{"cflags_column",       PARAM_STR, &cflags_col    },
+ 	{"db_url",              PARAM_STR, &db_url        },
++	{"db_url_ro",           PARAM_STR, &db_url_ro.s     },
  	{"timer_interval",      INT_PARAM, &timer_interval  },
  	{"db_mode",             INT_PARAM, &db_mode         },
  	{"use_domain",          INT_PARAM, &use_domain      },
-@@ -264,6 +268,38 @@
+@@ -270,6 +274,38 @@ struct module_exports exports = {
  	child_init  /*!< Child initialization function */
  };
  
@@ -64,15 +79,7 @@
  
  /*! \brief
   * Module initialization function
-@@ -316,6 +352,7 @@
- 	reg_id_col.len = strlen(reg_id_col.s);
- 	last_mod_col.len = strlen(last_mod_col.s);
- 	db_url.len = strlen(db_url.s);
-+	if(db_url_ro.s) db_url_ro.len = strlen(db_url_ro.s);
- 
- 	if(ul_xavp_contact_name.s!=NULL)
- 		ul_xavp_contact_name.len = strlen(ul_xavp_contact_name.s);
-@@ -374,6 +411,21 @@
+@@ -356,6 +392,21 @@ static int mod_init(void)
  		}
  	}
  
@@ -94,15 +101,7 @@
  	if (nat_bflag==(unsigned int)-1) {
  		nat_bflag = 0;
  	} else if ( nat_bflag>=8*sizeof(nat_bflag) ) {
-@@ -398,7 +450,6 @@
- 	return 0;
- }
- 
--
- static int child_init(int _rank)
- {
- 	dlist_t* ptr;
-@@ -447,6 +498,16 @@
+@@ -429,6 +480,16 @@ static int child_init(int _rank)
  		LM_ERR("child(%d): failed to connect to database\n", _rank);
  		return -1;
  	}
@@ -119,16 +118,7 @@
  	/* _rank==PROC_SIPINIT is used even when fork is disabled */
  	if (_rank==PROC_SIPINIT && db_mode!=DB_ONLY) {
  		/* if cache is used, populate domains from DB */
-@@ -480,6 +541,8 @@
- 		}
- 	}
- 
-+	if (db_mode == DB_ONLY)
-+
- 	if(sruid_init(&_ul_sruid, '-', "ulcx", SRUID_INC)<0)
- 		return -1;
- 	done = 1;
-@@ -502,6 +565,10 @@
+@@ -484,6 +545,10 @@ static void destroy(void)
  		ul_dbf.close(ul_dbh);
  	}
  
@@ -139,9 +129,11 @@
  	free_all_udomains();
  	ul_destroy_locks();
  
+diff --git a/modules/usrloc/ul_mod.h b/modules/usrloc/ul_mod.h
+index 9064cfc..476981f 100644
 --- a/modules/usrloc/ul_mod.h
 +++ b/modules/usrloc/ul_mod.h
-@@ -96,6 +96,8 @@
+@@ -96,6 +96,8 @@ extern str ul_xavp_contact_name;
  extern db1_con_t* ul_dbh;   /* Database connection handle */
  extern db_func_t ul_dbf;
  
@@ -150,3 +142,6 @@
  
  /*
   * Matching algorithms
+-- 
+2.1.4
+
