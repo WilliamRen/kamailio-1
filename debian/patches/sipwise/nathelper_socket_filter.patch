@@ -16,7 +16,7 @@
  
  	{0, 0, 0}
  };
-@@ -2061,6 +2063,7 @@
+@@ -2050,6 +2052,7 @@
  	char *path_ip_str = NULL;
  	unsigned int path_ip = 0;
  	unsigned short path_port = 0;
@@ -24,7 +24,7 @@
  
  	if((*natping_state) == 0)
  		goto done;
-@@ -2073,10 +2076,13 @@
+@@ -2062,10 +2065,13 @@
  			goto done;
  		}
  	}
@@ -40,7 +40,7 @@
  	if (rval<0) {
  		LM_ERR("failed to fetch contacts\n");
  		goto done;
-@@ -2092,8 +2098,7 @@
+@@ -2081,8 +2087,7 @@
  		}
  		rval = ul.get_all_ucontacts_opt(buf,cblen,(ping_nated_only?ul.nat_flag:0),
  		   ((unsigned int)(unsigned long)timer_idx)*natping_interval+iteration,
@@ -52,8 +52,117 @@
  			goto done;
 --- a/modules/usrloc/dlist.c
 +++ b/modules/usrloc/dlist.c
-@@ -79,6 +79,53 @@
- 	return 1;
+@@ -82,9 +82,9 @@
+ extern int ul_db_raw_fetch_type;
+ 
+ #define UL_DB_RAW_FETCH_COMMON	 "select %.*s, %.*s, %.*s, %.*s, %.*s, %.*s from %s where %.*s > %.*s and %.*s & %d = %d and id %% %u = %u"
+-
++#define UL_DB_RAW_FETCH_SOCK_COMMON	 "select %.*s, %.*s, %.*s, %.*s, %.*s, %.*s from %s where %.*s > %.*s and %.*s & %d = %d and id %% %u = %u and %.*s in %.*s"
+ #define UL_DB_RAW_FETCH_ORACLE   "select %.*s, %.*s, %.*s, %.*s, %.*s, %.*s from %s where %.*s > %.*s and  bitand(%.*s, %d) = %d and mod(id, %u) = %u"
+-
++#define UL_DB_RAW_FETCH_SOCK_ORACLE   "select %.*s, %.*s, %.*s, %.*s, %.*s, %.*s from %s where %.*s > %.*s and  bitand(%.*s, %d) = %d and mod(id, %u) = %u and %.*s in %.*s"
+ /*!
+  * \brief Get all contacts from the database, in partitions if wanted
+  * \see get_all_ucontacts
+@@ -101,6 +101,8 @@
+ 								unsigned int options)
+ {
+ 	static char query_buf[512];
++	static char socket_list[256];
++	static str socket_str;
+ 	static str query_str;
+ 
+ 	struct socket_info *sock;
+@@ -120,8 +122,42 @@
+ 	int i;
+ 	void *cp;
+ 	int shortage, needed;
++	char *query_format = NULL;
++	db1_con_t* dbh = NULL;
++	db_func_t* dbf = NULL;
++
++	if (options & GAU_OPT_FILTER_SOCKET)
++	{
++		socket_str.s = socket_list;
++		socket_str.len = sprint_all_socket_lists(&socket_str.s, 256);
++		if(socket_str.len<0) {
++			LM_ERR("error generating socket_list parameter\n");
++			return -1;
++		}
++		LM_DBG("socket_str[%d]:[%.*s]\n", socket_str.len, socket_str.len, socket_str.s);
++		query_format = (ul_db_raw_fetch_type==1)?
++					UL_DB_RAW_FETCH_SOCK_ORACLE:UL_DB_RAW_FETCH_SOCK_COMMON;
++		if(!ul_dbh_ro) {
++			LM_ERR("read-only connection not available. Using db_url\n");
++			dbh = ul_dbh;
++			dbf = &ul_dbf;
++		}
++		else
++		{
++			dbh = ul_dbh_ro;
++			dbf = &ul_dbf_ro;
++			LM_DBG("use read-only db\n");
++		}
++	}
++	else
++	{
++		query_format = (ul_db_raw_fetch_type==1)?
++					UL_DB_RAW_FETCH_ORACLE:UL_DB_RAW_FETCH_COMMON;
++		dbh = ul_dbh;
++		dbf = &ul_dbf;
++	}
+ 
+-	if(ul_dbf.raw_query==NULL) {
++	if(dbf->raw_query==NULL) {
+ 		LM_WARN("DB raw query support is required, but not implemented\n");
+ 		return -1;
+ 	}
+@@ -142,8 +178,7 @@
+ 	for (dom = root; dom!=NULL ; dom=dom->next) {
+ 		/* build query */
+ 		i = snprintf( query_buf, sizeof(query_buf),
+-			(ul_db_raw_fetch_type==1)?
+-					UL_DB_RAW_FETCH_ORACLE:UL_DB_RAW_FETCH_COMMON,
++			query_format,
+ 			received_col.len, received_col.s,
+ 			contact_col.len, contact_col.s,
+ 			sock_col.len, sock_col.s,
+@@ -154,19 +189,21 @@
+ 			expires_col.len, expires_col.s,
+ 			now_len, now_s,
+ 			cflags_col.len, cflags_col.s,
+-			flags, flags, part_max, part_idx);
++			flags, flags, part_max, part_idx,
++			sock_col.len, sock_col.s,
++			socket_str.len, socket_str.s);
+ 		if ( i>=sizeof(query_buf) ) {
+ 			LM_ERR("DB query too long\n");
+ 			return -1;
+ 		}
+ 		query_str.s = query_buf;
+ 		query_str.len = i;
+-		if ( ul_dbf.raw_query( ul_dbh, &query_str, &res)<0 ) {
++		if ( dbf->raw_query( dbh, &query_str, &res)<0 ) {
+ 			LM_ERR("raw_query failed\n");
+ 			return -1;
+ 		}
+ 		if( RES_ROW_N(res)==0 ) {
+-			ul_dbf.free_result(ul_dbh, res);
++			dbf->free_result(dbh, res);
+ 			continue;
+ 		}
+ 
+@@ -270,7 +307,7 @@
+ 			len -= needed;
+ 		} /* row cycle */
+ 
+-		ul_dbf.free_result(ul_dbh, res);
++		dbf->free_result(dbh, res);
+ 	} /* domain cycle */
+ 
+ 	/* len < 0 is possible, if size of the buffer < sizeof(c->c.len) */
+@@ -287,6 +324,53 @@
+ 	return shortage > 0 ? shortage : 0;
  }
  
 +int sprint_all_socket_lists(char **buf, int len)
@@ -105,120 +214,7 @@
 +}
  
  /*!
-  * \brief Get all contacts from the database, in partitions if wanted
-@@ -96,6 +143,8 @@
- 								unsigned int options)
- {
- 	static char query_buf[512];
-+	static char socket_list[256];
-+	static str socket_str;
- 	static str query_str;
- 
- 	struct socket_info *sock;
-@@ -115,8 +164,52 @@
- 	int i;
- 	void *cp;
- 	int shortage, needed;
-+	char *query_format = NULL;
-+	db1_con_t* dbh = NULL;
-+    db_func_t* dbf = NULL;
-+
-+	if (options & GAU_OPT_FILTER_SOCKET)
-+	{
-+		socket_str.s = socket_list;
-+		socket_str.len = sprint_all_socket_lists(&socket_str.s, 256);
-+		if(socket_str.len<0) {
-+			LM_ERR("error generating socket_list parameter\n");
-+			return -1;
-+		}
-+		LM_DBG("socket_str[%d]:[%.*s]\n", socket_str.len, socket_str.len, socket_str.s);
-+		query_format = "select %.*s, %.*s, %.*s,"
-+			" %.*s, %.*s, %.*s from %s where %.*s > %.*s and"
-+#ifdef ORACLE_USRLOC
-+			" bitand(%.*s, %d) = %d and mod(id, %u) = %u and %.*s in %.*s";
-+#else
-+			" %.*s & %d = %d and id %% %u = %u and %.*s in %.*s";
-+#endif
-+		if(!ul_dbh_ro) {
-+			LM_ERR("read-only connection not available. Using db_url\n");
-+			dbh = ul_dbh;
-+			dbf = &ul_dbf;
-+		}
-+		else
-+		{
-+			dbh = ul_dbh_ro;
-+			dbf = &ul_dbf_ro;
-+			LM_DBG("use read-only db\n");
-+		}
-+	}
-+	else
-+	{
-+		query_format = "select %.*s, %.*s, %.*s,"
-+			" %.*s, %.*s, %.*s from %s where %.*s > %.*s and"
-+#ifdef ORACLE_USRLOC
-+			" bitand(%.*s, %d) = %d and mod(id, %u) = %u";
-+#else
-+			" %.*s & %d = %d and id %% %u = %u";
-+#endif
-+		dbh = ul_dbh;
-+		dbf = &ul_dbf;
-+	}
- 
--	if(ul_dbf.raw_query==NULL) {
-+	if(dbf->raw_query==NULL) {
- 		LM_WARN("DB raw query support is required, but not implemented\n");
- 		return -1;
- 	}
-@@ -136,13 +229,8 @@
- 
- 	for (dom = root; dom!=NULL ; dom=dom->next) {
- 		/* build query */
--		i = snprintf( query_buf, sizeof(query_buf), "select %.*s, %.*s, %.*s,"
--			" %.*s, %.*s, %.*s from %s where %.*s > %.*s and"
--#ifdef ORACLE_USRLOC
--			" bitand(%.*s, %d) = %d and mod(id, %u) = %u",
--#else
--			" %.*s & %d = %d and id %% %u = %u",
--#endif
-+		i = snprintf( query_buf, sizeof(query_buf),
-+			query_format,
- 			received_col.len, received_col.s,
- 			contact_col.len, contact_col.s,
- 			sock_col.len, sock_col.s,
-@@ -153,19 +241,21 @@
- 			expires_col.len, expires_col.s,
- 			now_len, now_s,
- 			cflags_col.len, cflags_col.s,
--			flags, flags, part_max, part_idx);
-+			flags, flags, part_max, part_idx,
-+			sock_col.len, sock_col.s,
-+			socket_str.len, socket_str.s);
- 		if ( i>=sizeof(query_buf) ) {
- 			LM_ERR("DB query too long\n");
- 			return -1;
- 		}
- 		query_str.s = query_buf;
- 		query_str.len = i;
--		if ( ul_dbf.raw_query( ul_dbh, &query_str, &res)<0 ) {
-+		if ( dbf->raw_query( dbh, &query_str, &res)<0 ) {
- 			LM_ERR("raw_query failed\n");
- 			return -1;
- 		}
- 		if( RES_ROW_N(res)==0 ) {
--			ul_dbf.free_result(ul_dbh, res);
-+			dbf->free_result(dbh, res);
- 			continue;
- 		}
- 
-@@ -269,7 +359,7 @@
- 			len -= needed;
- 		} /* row cycle */
- 
--		ul_dbf.free_result(ul_dbh, res);
-+		dbf->free_result(dbh, res);
- 	} /* domain cycle */
- 
- 	/* len < 0 is possible, if size of the buffer < sizeof(c->c.len) */
+  * \brief Get all contacts from the memory, in partitions if wanted
 --- a/modules/usrloc/usrloc.h
 +++ b/modules/usrloc/usrloc.h
 @@ -43,6 +43,7 @@
